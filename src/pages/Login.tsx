@@ -302,18 +302,6 @@ export default function Login() {
                       : ""
                   }`}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-0 top-0 h-12 px-3 grid place-items-center text-slate-500 hover:text-slate-700"
-                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                >
-                  {showPassword ? (
-                    <EyeOff className="w-5 h-5" />
-                  ) : (
-                    <Eye className="w-5 h-5" />
-                  )}
-                </button>
               </div>
               {errors.password && (
                 <p className="mt-1.5 text-xs text-red-600 flex items-center gap-1">

@@ -7,32 +7,18 @@ export interface CameraViewHandle {
   stop: () => void;
 }
 
-type Geo = {
-  lat?: number;
-  lng?: number;
-  acc?: number;
-  alt?: number | null;
-  heading?: number | null;
-  speed?: number | null;
-  granted?: boolean;
-};
-
 interface CameraViewProps {
-  onCapture: (blob: Blob) => void; // legado (mantido)
-  /** Opcional: recebe blob + metadados para você montar o FormData e enviar */
+  onCapture: (blob: Blob) => void;
   onCaptureMeta?: (data: {
     blob: Blob;
     width?: number;
     height?: number;
     client_ts: string; // ISO
-    geo?: Geo;
   }) => void;
   onError: (error: string) => void;
-  minIntervalMs?: number; // throttle entre capturas
-  maxDim?: number; // lado maior
-  quality?: number; // jpeg 0..1
-  /** Se true, tenta pedir geolocalização logo no início (recomendado p/ ngrok/https) */
-  requestGeolocationEarly?: boolean;
+  minIntervalMs?: number;
+  maxDim?: number;
+  quality?: number;
 }
 
 const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
@@ -44,7 +30,6 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
       minIntervalMs = 1000,
       maxDim = 720,
       quality = 0.85,
-      requestGeolocationEarly = true,
     },
     ref
   ) => {
@@ -63,63 +48,12 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
       "permission" | "notfound" | "general"
     >("general");
 
-    // geolocalização (armazenamos a última leitura com melhor acurácia)
-    const geoRef = useRef<Geo | undefined>(undefined);
-
-    // ───────────────── helpers geoloc ─────────────────
-    const tryGetGeolocation = async () => {
-      if (!("geolocation" in navigator)) {
-        geoRef.current = { granted: false };
-        return;
-      }
-      // alguns browsers já suportam Permissions API
-      try {
-        // @ts-ignore
-        const permStatus = await navigator.permissions?.query?.({
-          name: "geolocation",
-        });
-        // se for "denied", não tenta abrir prompt agora
-        if (permStatus && permStatus.state === "denied") {
-          geoRef.current = { granted: false };
-          return;
-        }
-      } catch {
-        // segue o baile
-      }
-
-      await new Promise<void>((resolve) => {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const { latitude, longitude, accuracy, altitude, heading, speed } =
-              pos.coords;
-            geoRef.current = {
-              lat: latitude,
-              lng: longitude,
-              acc: accuracy,
-              alt: altitude ?? null,
-              heading: heading ?? null,
-              speed: speed ?? null,
-              granted: true,
-            };
-            resolve();
-          },
-          () => {
-            geoRef.current = { granted: false };
-            resolve();
-          },
-          { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
-        );
-      });
-    };
-
-    // cria o worker (vite aceita URL de módulo)
     useEffect(() => {
       workerRef.current = new Worker(
         // @ts-ignore
         new URL("../workers/imageWorker.ts", import.meta.url),
         { type: "module" }
       );
-
       workerRef.current.onmessage = (
         ev: MessageEvent<{ ok: boolean; blob?: Blob; error?: string }>
       ) => {
@@ -131,12 +65,10 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
         if (data.blob) {
           const client_ts = new Date().toISOString();
 
-          // dimensões estimadas do quadro atual (após resize no worker)
-          // Como o worker faz resize para maxDim mantendo proporção, usamos o vídeo como base:
           const vw = videoRef.current?.videoWidth || undefined;
           const vh = videoRef.current?.videoHeight || undefined;
-          let width: number | undefined = vw;
-          let height: number | undefined = vh;
+          let width = vw,
+            height = vh;
           if (vw && vh) {
             const scale = Math.min(1, maxDim / Math.max(vw, vh));
             width = Math.max(1, Math.round(vw * scale));
@@ -146,25 +78,13 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
           try {
             onCapture(data.blob);
           } catch {}
-
           if (onCaptureMeta) {
             try {
-              onCaptureMeta({
-                blob: data.blob,
-                width,
-                height,
-                client_ts,
-                geo: geoRef.current,
-              });
+              onCaptureMeta({ blob: data.blob, width, height, client_ts });
             } catch {}
           }
         }
       };
-
-      if (requestGeolocationEarly) {
-        // HTTPS (ngrok) → funciona
-        tryGetGeolocation();
-      }
 
       initCamera();
       return () => {
@@ -245,7 +165,6 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
               [bitmap as unknown as Transferable]
             );
           } else {
-            // Fallback off-DOM
             const vw = video.videoWidth || 1280;
             const vh = video.videoHeight || 720;
             const canvas = document.createElement("canvas");
@@ -311,7 +230,7 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
       }
     };
 
-    // ---- UIs de erro / loading ----
+    // ---- UI erro/loading ----
     if (hasError) {
       if (errorType === "permission") {
         return (
@@ -368,8 +287,7 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
                 onClick={initCamera}
                 className="flex items-center gap-3 px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-semibold transition-colors shadow-lg"
               >
-                <RotateCcw className="w-5 h-5" />
-                Tentar Novamente
+                <RotateCcw className="w-5 h-5" /> Tentar Novamente
               </motion.button>
             </div>
           </div>
@@ -395,8 +313,7 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
                 onClick={initCamera}
                 className="flex items-center gap-2 mx-auto px-4 py-2 bg-blue-600 text-white rounded-lg font-medium"
               >
-                <RotateCcw className="w-4 h-4" />
-                Tentar novamente
+                <RotateCcw className="w-4 h-4" /> Tentar novamente
               </motion.button>
             </div>
           </div>
@@ -439,7 +356,6 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
           }}
         />
 
-        {/* overlay */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="w-48 h-60 border-2 border-white/80 rounded-full relative">
             <div className="absolute -top-2 -left-2 w-6 h-6 border-t-4 border-l-4 border-blue-400 rounded-tl-lg" />
