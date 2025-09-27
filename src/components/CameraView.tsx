@@ -7,24 +7,52 @@ export interface CameraViewHandle {
   stop: () => void;
 }
 
+type Geo = {
+  lat?: number;
+  lng?: number;
+  acc?: number;
+  alt?: number | null;
+  heading?: number | null;
+  speed?: number | null;
+  granted?: boolean;
+};
+
 interface CameraViewProps {
-  onCapture: (blob: Blob) => void;
+  onCapture: (blob: Blob) => void; // legado (mantido)
+  /** Opcional: recebe blob + metadados para você montar o FormData e enviar */
+  onCaptureMeta?: (data: {
+    blob: Blob;
+    width?: number;
+    height?: number;
+    client_ts: string; // ISO
+    geo?: Geo;
+  }) => void;
   onError: (error: string) => void;
   minIntervalMs?: number; // throttle entre capturas
   maxDim?: number; // lado maior
   quality?: number; // jpeg 0..1
+  /** Se true, tenta pedir geolocalização logo no início (recomendado p/ ngrok/https) */
+  requestGeolocationEarly?: boolean;
 }
 
 const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
   (
-    { onCapture, onError, minIntervalMs = 1000, maxDim = 720, quality = 0.85 },
+    {
+      onCapture,
+      onCaptureMeta,
+      onError,
+      minIntervalMs = 1000,
+      maxDim = 720,
+      quality = 0.85,
+      requestGeolocationEarly = true,
+    },
     ref
   ) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
 
     const rafRef = useRef<number | null>(null);
-    const rvfcIdRef = useRef<number | null>(null); // requestVideoFrameCallback id
+    const rvfcIdRef = useRef<number | null>(null);
     const lastShotRef = useRef<number>(0);
     const inFlightRef = useRef<boolean>(false);
     const workerRef = useRef<Worker | null>(null);
@@ -35,6 +63,55 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
       "permission" | "notfound" | "general"
     >("general");
 
+    // geolocalização (armazenamos a última leitura com melhor acurácia)
+    const geoRef = useRef<Geo | undefined>(undefined);
+
+    // ───────────────── helpers geoloc ─────────────────
+    const tryGetGeolocation = async () => {
+      if (!("geolocation" in navigator)) {
+        geoRef.current = { granted: false };
+        return;
+      }
+      // alguns browsers já suportam Permissions API
+      try {
+        // @ts-ignore
+        const permStatus = await navigator.permissions?.query?.({
+          name: "geolocation",
+        });
+        // se for "denied", não tenta abrir prompt agora
+        if (permStatus && permStatus.state === "denied") {
+          geoRef.current = { granted: false };
+          return;
+        }
+      } catch {
+        // segue o baile
+      }
+
+      await new Promise<void>((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const { latitude, longitude, accuracy, altitude, heading, speed } =
+              pos.coords;
+            geoRef.current = {
+              lat: latitude,
+              lng: longitude,
+              acc: accuracy,
+              alt: altitude ?? null,
+              heading: heading ?? null,
+              speed: speed ?? null,
+              granted: true,
+            };
+            resolve();
+          },
+          () => {
+            geoRef.current = { granted: false };
+            resolve();
+          },
+          { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
+        );
+      });
+    };
+
     // cria o worker (vite aceita URL de módulo)
     useEffect(() => {
       workerRef.current = new Worker(
@@ -42,21 +119,52 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
         new URL("../workers/imageWorker.ts", import.meta.url),
         { type: "module" }
       );
+
       workerRef.current.onmessage = (
         ev: MessageEvent<{ ok: boolean; blob?: Blob; error?: string }>
       ) => {
         const data = ev.data;
         if (!data.ok) {
-          // não mexe em estado; evita layout thrash
           console.warn("[imageWorker]", data.error);
           return;
         }
         if (data.blob) {
+          const client_ts = new Date().toISOString();
+
+          // dimensões estimadas do quadro atual (após resize no worker)
+          // Como o worker faz resize para maxDim mantendo proporção, usamos o vídeo como base:
+          const vw = videoRef.current?.videoWidth || undefined;
+          const vh = videoRef.current?.videoHeight || undefined;
+          let width: number | undefined = vw;
+          let height: number | undefined = vh;
+          if (vw && vh) {
+            const scale = Math.min(1, maxDim / Math.max(vw, vh));
+            width = Math.max(1, Math.round(vw * scale));
+            height = Math.max(1, Math.round(vh * scale));
+          }
+
           try {
             onCapture(data.blob);
           } catch {}
+
+          if (onCaptureMeta) {
+            try {
+              onCaptureMeta({
+                blob: data.blob,
+                width,
+                height,
+                client_ts,
+                geo: geoRef.current,
+              });
+            } catch {}
+          }
         }
       };
+
+      if (requestGeolocationEarly) {
+        // HTTPS (ngrok) → funciona
+        tryGetGeolocation();
+      }
 
       initCamera();
       return () => {
@@ -102,8 +210,8 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
       } catch (err: any) {
         setHasError(true);
         setIsLoading(false);
-        if (err.name === "NotAllowedError") setErrorType("permission");
-        else if (err.name === "NotFoundError") setErrorType("notfound");
+        if (err?.name === "NotAllowedError") setErrorType("permission");
+        else if (err?.name === "NotFoundError") setErrorType("notfound");
         else setErrorType("general");
       }
     };
@@ -131,13 +239,13 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
           if (canImageCapture) {
             // @ts-ignore
             const ic = new (window as any).ImageCapture(track);
-            const bitmap: ImageBitmap = await ic.grabFrame(); // não pausa o <video>
+            const bitmap: ImageBitmap = await ic.grabFrame();
             workerRef.current?.postMessage(
               { kind: "bitmap", bitmap, maxDim, quality },
               [bitmap as unknown as Transferable]
             );
           } else {
-            // Fallback feito 100% off-DOM (canvas não é anexado)
+            // Fallback off-DOM
             const vw = video.videoWidth || 1280;
             const vh = video.videoHeight || 720;
             const canvas = document.createElement("canvas");
@@ -151,7 +259,7 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
               [imgd.data.buffer]
             );
           }
-        } catch (e) {
+        } catch {
           try {
             onError("Erro ao capturar foto");
           } catch {}
@@ -166,7 +274,6 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
           rvfcIdRef.current = (
             videoRef.current as any
           )?.requestVideoFrameCallback(loop);
-          // agenda fora do frame para não bloquear apresentação
           queueMicrotask(doCapture);
         };
         rvfcIdRef.current = (
@@ -300,7 +407,6 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
     return (
       <div
         className="relative aspect-[4/3] bg-black rounded-2xl overflow-hidden"
-        // trava o layout do container (evita jumps)
         style={{ contain: "strict", transform: "translateZ(0)" }}
       >
         {isLoading && (
@@ -325,7 +431,6 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
           disablePictureInPicture
           controls={false}
           className="w-full h-full object-cover"
-          // deixa o vídeo na camada GPU e evita flicker
           style={{
             transform: "translateZ(0)",
             backfaceVisibility: "hidden",
@@ -334,7 +439,7 @@ const CameraView = React.forwardRef<CameraViewHandle, CameraViewProps>(
           }}
         />
 
-        {/* guia/overlay sem alterar layout */}
+        {/* overlay */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="w-48 h-60 border-2 border-white/80 rounded-full relative">
             <div className="absolute -top-2 -left-2 w-6 h-6 border-t-4 border-l-4 border-blue-400 rounded-tl-lg" />

