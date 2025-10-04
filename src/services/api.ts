@@ -5,7 +5,7 @@ import axios, { AxiosError } from "axios";
  * BASE URL
  * ============================= */
 const ENV_BASE = import.meta.env?.VITE_API_URL;
-const FALLBACK_NGROK = "https://a5e2abe24ab4.ngrok-free.app"; // opcional
+const FALLBACK_NGROK = "https://3cdc31b54046.ngrok-free.app"; // opcional
 const baseURL =
   (ENV_BASE && ENV_BASE.trim() !== "" ? ENV_BASE : FALLBACK_NGROK) ||
   "http://localhost:5000";
